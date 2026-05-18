@@ -121,12 +121,13 @@ class TestDisplayModels:
     @pytest.mark.asyncio
     async def test_with_models(self, capsys):
         import main
+        from classes.cli import ConversationRenderer
         mock_provider = MagicMock()
         mock_provider.get_models = AsyncMock(return_value=[
             {"id": "model-1", "name": "Model 1", "description": "", "context_window": 128000},
             {"id": "model-2", "name": "Model 2", "description": "", "context_window": None},
         ])
-        await main.display_models(mock_provider, MagicMock())
+        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
         captured = capsys.readouterr()
         assert "model-1" in captured.out
         assert "128000" in captured.out
@@ -135,18 +136,20 @@ class TestDisplayModels:
     @pytest.mark.asyncio
     async def test_no_models(self, capsys):
         import main
+        from classes.cli import ConversationRenderer
         mock_provider = MagicMock()
         mock_provider.get_models = AsyncMock(return_value=[])
-        await main.display_models(mock_provider, MagicMock())
+        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
         captured = capsys.readouterr()
         assert "No models found" in captured.out
 
     @pytest.mark.asyncio
     async def test_exception(self, capsys):
         import main
+        from classes.cli import ConversationRenderer
         mock_provider = MagicMock()
         mock_provider.get_models = AsyncMock(side_effect=Exception("API fail"))
-        await main.display_models(mock_provider, MagicMock())
+        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
         captured = capsys.readouterr()
         assert "Error fetching models" in captured.out
 
@@ -161,9 +164,12 @@ def _make_mock_provider(stream_text="Response text"):
     provider.ENV_VAR = "TEST_API_KEY"
     provider.create_client = MagicMock(return_value=MagicMock())
 
-    async def mock_stream(client, context):
-        print(stream_text, end="", flush=True)
-        print()
+    async def mock_stream(client, context, renderer=None):
+        if renderer is not None:
+            renderer.write_stream(stream_text)
+        else:
+            print(stream_text, end="", flush=True)
+            print()
         context.append("assistant", stream_text)
 
     provider.stream_response = AsyncMock(side_effect=mock_stream)
@@ -305,6 +311,8 @@ class TestMainResume:
         captured = capsys.readouterr()
         assert "Resumed conversation resume-uuid" in captured.out
         assert "2 messages" in captured.out
+        assert "You: Previous message" in captured.out
+        assert "AI: Previous reply" in captured.out
 
     @pytest.mark.asyncio
     async def test_resume_latest(self, tmp_path, capsys):

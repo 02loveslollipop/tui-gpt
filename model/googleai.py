@@ -3,9 +3,9 @@ import asyncio
 from google import genai
 from google.genai import types
 
-MODEL = "gemma-4-31b-it"
+MODEL = "gemma-4-26b-a4b-it"
 ENV_VAR = "GOOGLE_API_KEY"
-DISPLAY_NAME = "Google (Gemma 4 31B)"
+DISPLAY_NAME = "Google (Gemma 4 26B A4B)"
 
 
 def create_client():
@@ -37,7 +37,7 @@ async def get_models(client=None):
     return models
 
 
-async def stream_response(client, context):
+async def stream_response(client, context, renderer=None):
     messages = context.get_messages()
 
     # Extract system instruction and convert message format
@@ -64,7 +64,11 @@ async def stream_response(client, context):
     async for chunk in stream:
         if chunk.text:
             full_response += chunk.text
-            print(chunk.text, end="", flush=True)
+            if renderer is not None:
+                renderer.write_stream(chunk.text)
+            else:
+                print(chunk.text, end="", flush=True)
 
-    print()
+    if renderer is None:
+        print()
     context.append("assistant", full_response)

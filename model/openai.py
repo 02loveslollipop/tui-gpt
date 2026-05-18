@@ -34,7 +34,7 @@ async def get_models(client=None):
     return models
 
 
-async def stream_response(client, context):
+async def stream_response(client, context, renderer=None):
     stream = await client.responses.create(
         model=MODEL,
         input=context.get_messages(),
@@ -46,7 +46,11 @@ async def stream_response(client, context):
             delta = getattr(event, "delta", "")
             if delta:
                 full_response += delta
-                print(delta, end="", flush=True)
+                if renderer is not None:
+                    renderer.write_stream(delta)
+                else:
+                    print(delta, end="", flush=True)
 
-    print()
+    if renderer is None:
+        print()
     context.append("assistant", full_response)
