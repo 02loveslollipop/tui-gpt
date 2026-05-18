@@ -36,26 +36,22 @@ def save_conversation(context, conv_path, provider_name, model_name):
     context.serialize(str(conv_path), provider_name=provider_name, model_name=model_name)
 
 
-async def display_models(provider, client, renderer):
-    """Fetch and display available models from a provider."""
-    try:
-        models = await provider.get_models(client)
-        renderer.print_model_table(models)
-    except Exception as e:
-        renderer.print_error(f"[Error fetching models: {e}]")
+async def display_models(renderer, models):
+    """Display provider models that have already been fetched."""
+    renderer.print_model_table(models)
 
 
-def resolve_system_prompt(prompt_file_arg=None):
+def resolve_system_prompt(prompt_file_arg=None, renderer=None):
     """Resolve the system prompt string following override rules."""
     if prompt_file_arg:
         path = Path(prompt_file_arg)
         if path.is_file():
             return path.read_text(encoding="utf-8")
         else:
-            print(
-                f"{ConversationRenderer.RED}[Warning: Prompt file '{prompt_file_arg}' not found. Falling back.]"
-                f"{ConversationRenderer.RESET}"
-            )
+            if renderer is not None:
+                renderer.print_warning(
+                    f"[Warning: Prompt file '{prompt_file_arg}' not found. Falling back.]"
+                )
 
     local_prompt = Path("PROMPT.md")
     if local_prompt.is_file():
@@ -72,7 +68,7 @@ async def main():
     load_dotenv()
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
     renderer = ConversationRenderer()
-    completer = CommandCompleter(PROVIDERS)
+    completer = CommandCompleter(PROVIDERS, renderer=renderer)
     completer.configure_readline()
 
     parser = argparse.ArgumentParser(description="yacpt CLI")
@@ -125,18 +121,17 @@ async def main():
         client = provider.create_client()
         
         # Resolve custom prompt if present
-        actual_prompt = resolve_system_prompt(args.prompt_file)
+        actual_prompt = resolve_system_prompt(args.prompt_file, renderer=renderer)
         context = Context(actual_prompt)
         
         conversation_id = str(uuid.uuid4())
         renderer.print_banner(f"=== New conversation {conversation_id} ===")
         conv_path = CONVERSATIONS_DIR / f"{conversation_id}.jsonl"
 
-    await completer.fetch_all_models()
-
     renderer.print_plain(f"Active model: {provider.DISPLAY_NAME}")
     renderer.print_plain("Commands: /exit  /compact  /prune <n>  /model <provider> [model_name]")
-    renderer.print_plain("Tab completes /commands and model IDs.\n")
+    renderer.print_plain("Tab completes /commands and model IDs.")
+    renderer.print_plain()
 
     try:
         while True:
@@ -172,10 +167,9 @@ async def main():
                 parts = cmd.split()
                 if len(parts) == 2 and parts[1] in PROVIDERS:
                     # Show available models for the provider
-                    target_provider = PROVIDERS[parts[1]]
                     renderer.print_status(f"[Fetching models for {parts[1]}...]")
-                    await completer.fetch_provider_models(parts[1])
-                    await display_models(target_provider, target_provider.create_client(), renderer)
+                    await completer.fetch_provider_models(parts[1], force=True)
+                    await display_models(renderer, completer.get_cached_models(parts[1]))
                     renderer.print_status(f"[Use /model {parts[1]} <model_id> to switch]")
                 elif len(parts) > 2 and parts[1] in PROVIDERS:
                     provider_name = parts[1]
@@ -206,14 +200,12 @@ async def main():
                 renderer.print_success("[Done]")
 
             # Stream response from the active provider
-            renderer.start_stream("assistant")
             try:
                 await provider.stream_response(client, context, renderer=renderer)
-                renderer.end_stream()
                 # Save after assistant response
                 save_conversation(context, conv_path, provider_name, provider.MODEL)
             except Exception as e:
-                renderer.end_stream()
+                save_conversation(context, conv_path, provider_name, provider.MODEL)
                 renderer.print_error(f"Error: {e}")
 
     except (KeyboardInterrupt, EOFError):

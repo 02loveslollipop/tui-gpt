@@ -171,3 +171,36 @@ class TestStreamResponse:
 
         renderer.write_stream.assert_called_once_with("rendered")
         assert ctx.get_messages()[-1]["content"] == "rendered"
+
+    @pytest.mark.asyncio
+    async def test_partial_response_is_preserved_on_stream_error(self):
+        from model import mistral as provider
+        ctx = Context("sys")
+        ctx.append("user", "Hello")
+
+        class FailingStream:
+            def __init__(self):
+                self.sent = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.sent:
+                    self.sent = True
+                    chunk = MagicMock()
+                    chunk.data.choices = [MagicMock()]
+                    chunk.data.choices[0].delta.content = "partial"
+                    return chunk
+                raise RuntimeError("stream broke")
+
+        mock_client = MagicMock()
+        mock_client.chat.stream_async = AsyncMock(return_value=FailingStream())
+        renderer = MagicMock()
+
+        with pytest.raises(RuntimeError, match="stream broke"):
+            await provider.stream_response(mock_client, ctx, renderer=renderer)
+
+        renderer.start_stream.assert_called_once_with("assistant")
+        renderer.end_stream.assert_called_once()
+        assert ctx.get_messages()[-1]["content"] == "partial"

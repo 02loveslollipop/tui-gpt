@@ -35,6 +35,14 @@ class TestResolveSystemPrompt:
             res = main.resolve_system_prompt("missing.md")
             assert res == main.SYSTEM_PROMPT
 
+    def test_prompt_file_arg_not_found_warns_via_renderer(self):
+        import main
+        renderer = MagicMock()
+        with patch("main.Path.is_file", return_value=False):
+            res = main.resolve_system_prompt("missing.md", renderer=renderer)
+        assert res == main.SYSTEM_PROMPT
+        renderer.print_warning.assert_called_once()
+
     def test_local_prompt_exists(self):
         import main
         with patch("main.Path.is_file") as mock_is_file, \
@@ -119,41 +127,24 @@ class TestSaveConversation:
 # ── display_models ────────────────────────────────────────────────────────
 
 class TestDisplayModels:
-    @pytest.mark.asyncio
-    async def test_with_models(self, capsys):
+    def test_with_models(self, capsys):
         import main
         from classes.cli import ConversationRenderer
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(return_value=[
+        main.asyncio.run(main.display_models(ConversationRenderer(), [
             {"id": "model-1", "name": "Model 1", "description": "", "context_window": 128000},
             {"id": "model-2", "name": "Model 2", "description": "", "context_window": None},
-        ])
-        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
+        ]))
         captured = capsys.readouterr()
         assert "model-1" in captured.out
         assert "128000" in captured.out
         assert "model-2" in captured.out
 
-    @pytest.mark.asyncio
-    async def test_no_models(self, capsys):
+    def test_no_models(self, capsys):
         import main
         from classes.cli import ConversationRenderer
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(return_value=[])
-        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
+        main.asyncio.run(main.display_models(ConversationRenderer(), []))
         captured = capsys.readouterr()
         assert "No models found" in captured.out
-
-    @pytest.mark.asyncio
-    async def test_exception(self, capsys):
-        import main
-        from classes.cli import ConversationRenderer
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(side_effect=Exception("API fail"))
-        await main.display_models(mock_provider, MagicMock(), ConversationRenderer())
-        captured = capsys.readouterr()
-        assert "Error fetching models" in captured.out
-
 
 # ── Helpers for main() tests ─────────────────────────────────────────────
 
@@ -167,7 +158,9 @@ def _make_mock_provider(stream_text="Response text"):
 
     async def mock_stream(client, context, renderer=None):
         if renderer is not None:
+            renderer.start_stream("assistant")
             renderer.write_stream(stream_text)
+            renderer.end_stream()
         else:
             print(stream_text, end="", flush=True)
             print()
@@ -202,6 +195,24 @@ def _patch_main_for_test(tmp_path, inputs, argv=None, provider=None):
 # ── main() — new session ─────────────────────────────────────────────────
 
 class TestMainNewSession:
+    @pytest.mark.asyncio
+    async def test_new_session_does_not_prefetch_models_on_startup(self, tmp_path):
+        import main
+        provider = _make_mock_provider()
+        patches, conv_dir, _ = _patch_main_for_test(tmp_path, [], provider=provider)
+
+        input_sequence = iter(["/exit"])
+        with patch.object(main, "CONVERSATIONS_DIR", conv_dir), \
+             patch.object(main, "PROVIDERS", patches["PROVIDERS"]), \
+             patch("main.load_dotenv"), \
+             patch.object(sys, "argv", ["main.py"]), \
+             patch("main.uuid") as mock_uuid, \
+             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_sequence)):
+            mock_uuid.uuid4.return_value = "test-uuid-1234"
+            await main.main()
+
+        provider.get_models.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_send_message_and_exit(self, tmp_path, capsys):
         import main
@@ -493,6 +504,7 @@ class TestMainCommands:
         captured = capsys.readouterr()
         assert "Fetching models" in captured.out
         assert "test-model" in captured.out
+        provider.get_models.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_model_switch(self, tmp_path, capsys):

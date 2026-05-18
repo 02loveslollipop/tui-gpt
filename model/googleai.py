@@ -38,6 +38,7 @@ async def get_models(client=None):
 
 
 async def stream_response(client, context, renderer=None):
+    """Stream a response and persist any partial assistant text if the stream fails."""
     messages = context.get_messages()
 
     # Extract system instruction and convert message format
@@ -54,6 +55,7 @@ async def stream_response(client, context, renderer=None):
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
 
     full_response = ""
+    completed = False
     stream = await client.aio.models.generate_content_stream(
         model=MODEL,
         contents=contents,
@@ -61,14 +63,21 @@ async def stream_response(client, context, renderer=None):
             system_instruction=system_instruction,
         ),
     )
-    async for chunk in stream:
-        if chunk.text:
-            full_response += chunk.text
-            if renderer is not None:
-                renderer.write_stream(chunk.text)
-            else:
-                print(chunk.text, end="", flush=True)
-
-    if renderer is None:
-        print()
-    context.append("assistant", full_response)
+    if renderer is not None:
+        renderer.start_stream("assistant")
+    try:
+        async for chunk in stream:
+            if chunk.text:
+                full_response += chunk.text
+                if renderer is not None:
+                    renderer.write_stream(chunk.text)
+                else:
+                    print(chunk.text, end="", flush=True)
+        completed = True
+    finally:
+        if renderer is not None:
+            renderer.end_stream()
+        else:
+            print()
+        if full_response or completed:
+            context.append("assistant", full_response)

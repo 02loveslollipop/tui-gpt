@@ -35,6 +35,9 @@ class ConversationRenderer:
     def print_status(self, text: str):
         print(f"{self.YELLOW}{text}{self.RESET}")
 
+    def print_warning(self, text: str):
+        print(f"{self.YELLOW}{text}{self.RESET}")
+
     def print_success(self, text: str):
         print(f"{self.GREEN}{text}{self.RESET}")
 
@@ -64,13 +67,16 @@ class ConversationRenderer:
             print()
 
     def start_stream(self, role: str):
+        """Start a streamed message line for the given role."""
         print(self.get_prompt(role), end="", flush=True)
         self._stream_open = True
 
     def write_stream(self, chunk: str):
+        """Write a chunk into the active streamed message line."""
         print(chunk, end="", flush=True)
 
     def end_stream(self):
+        """Finish the active streamed message line, if one is open."""
         if self._stream_open:
             print()
             self._stream_open = False
@@ -100,19 +106,35 @@ class CommandCompleter:
         "/model": "/model <provider> [model_name]: list or switch models",
     }
 
-    def __init__(self, providers):
+    def __init__(self, providers, renderer=None):
         self.providers = providers
+        self.renderer = renderer
         self.model_cache = {name: [] for name in providers}
+        self.model_details_cache = {name: [] for name in providers}
         self.command_names = sorted(self.COMMAND_HINTS)
+        self.fetch_attempted = set()
+        self.fetch_errors = {}
 
-    async def fetch_provider_models(self, provider_name: str):
+    async def fetch_provider_models(self, provider_name: str, force: bool = False):
+        if not force and provider_name in self.fetch_attempted:
+            return self.model_cache[provider_name]
+
         provider = self.providers[provider_name]
         try:
             client = provider.create_client()
             models = await provider.get_models(client)
-        except Exception:
+        except Exception as e:
             models = []
+            self.fetch_errors[provider_name] = str(e)
+            if self.renderer is not None:
+                self.renderer.print_warning(
+                    f"[Could not load models for {provider_name}: {e}]"
+                )
+        else:
+            self.fetch_errors.pop(provider_name, None)
 
+        self.fetch_attempted.add(provider_name)
+        self.model_details_cache[provider_name] = sorted(models, key=lambda model: model["id"])
         self.model_cache[provider_name] = sorted(model["id"] for model in models)
         return self.model_cache[provider_name]
 
@@ -120,6 +142,19 @@ class CommandCompleter:
         await asyncio.gather(
             *(self.fetch_provider_models(provider_name) for provider_name in self.providers)
         )
+
+    def get_cached_models(self, provider_name: str):
+        return list(self.model_details_cache[provider_name])
+
+    def ensure_provider_models(self, provider_name: str):
+        if provider_name in self.fetch_attempted:
+            return
+        coroutine = self.fetch_provider_models(provider_name)
+        try:
+            asyncio.run(coroutine)
+        except RuntimeError:
+            coroutine.close()
+            return
 
     def configure_readline(self):
         if readline is None:  # pragma: no cover
@@ -174,6 +209,8 @@ class CommandCompleter:
                 return [name for name in provider_names if name.startswith(parts[1])]
             if len(parts) >= 2:
                 provider_name = parts[1]
+                if provider_name in self.providers and not self.model_cache[provider_name]:
+                    self.ensure_provider_models(provider_name)
                 model_prefix = ""
                 if len(parts) >= 3 and not ends_with_space:
                     model_prefix = parts[2]

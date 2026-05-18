@@ -137,6 +137,17 @@ class TestCommandCompleter:
         finally:
             cli_module.readline = original_readline
 
+    def test_get_matches_fetches_models_lazily(self):
+        completer = CommandCompleter({"googleai": MagicMock()})
+        completer.ensure_provider_models = MagicMock(
+            side_effect=lambda provider_name: completer.model_cache.__setitem__(
+                provider_name, ["gemma-4", "gemini-2.5-pro"]
+            )
+        )
+
+        assert completer.get_matches("/model googleai ") == ["gemma-4", "gemini-2.5-pro"]
+        completer.ensure_provider_models.assert_called_once_with("googleai")
+
     def test_configure_readline_and_complete_without_module(self):
         original_readline = cli_module.readline
         cli_module.readline = None
@@ -152,12 +163,15 @@ class TestCommandCompleter:
     async def test_fetch_provider_models_handles_exception(self):
         provider = MagicMock()
         provider.create_client.side_effect = RuntimeError("boom")
+        renderer = MagicMock()
 
-        completer = CommandCompleter({"googleai": provider})
+        completer = CommandCompleter({"googleai": provider}, renderer=renderer)
         result = await completer.fetch_provider_models("googleai")
 
         assert result == []
         assert completer.model_cache["googleai"] == []
+        assert completer.fetch_errors["googleai"] == "boom"
+        renderer.print_warning.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_fetch_all_models_populates_cache(self):
@@ -172,6 +186,27 @@ class TestCommandCompleter:
         await completer.fetch_all_models()
 
         assert completer.model_cache["googleai"] == ["model-a", "model-b"]
+        assert completer.get_cached_models("googleai") == [{"id": "model-a"}, {"id": "model-b"}]
+
+    @pytest.mark.asyncio
+    async def test_fetch_provider_models_uses_cache_until_forced(self):
+        provider = MagicMock()
+        provider.create_client.return_value = MagicMock()
+        provider.get_models = AsyncMock(return_value=[{"id": "model-a"}])
+
+        completer = CommandCompleter({"googleai": provider})
+        await completer.fetch_provider_models("googleai")
+        await completer.fetch_provider_models("googleai")
+        await completer.fetch_provider_models("googleai", force=True)
+
+        assert provider.get_models.await_count == 2
+
+    def test_ensure_provider_models_runtime_error_is_ignored(self):
+        completer = CommandCompleter({"googleai": MagicMock()})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cli_module.asyncio, "run", MagicMock(side_effect=RuntimeError("loop")))
+            completer.ensure_provider_models("googleai")
 
     def test_configure_readline_with_module(self):
         fake_readline = MagicMock()
