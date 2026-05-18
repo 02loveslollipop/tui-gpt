@@ -187,9 +187,6 @@ class CommandCompleter:
         parts = stripped.split()
         ends_with_space = line_buffer.endswith(" ")
 
-        if not parts:
-            return self.command_names
-
         if len(parts) == 1 and not ends_with_space:
             return [cmd for cmd in self.command_names if cmd.startswith(parts[0])]
 

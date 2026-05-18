@@ -12,6 +12,7 @@ class TestConversationRenderer:
 
         renderer.print_banner("Banner")
         renderer.print_status("Status")
+        renderer.print_warning("Warning")
         renderer.print_success("Success")
         renderer.print_error("Error")
         renderer.print_plain("Plain")
@@ -20,6 +21,7 @@ class TestConversationRenderer:
         captured = capsys.readouterr()
         assert "Banner" in captured.out
         assert "Status" in captured.out
+        assert "Warning" in captured.out
         assert "Success" in captured.out
         assert "Error" in captured.out
         assert "Plain" in captured.out
@@ -111,6 +113,7 @@ class TestCommandCompleter:
         assert completer.get_matches("/model go") == ["googleai"]
         assert completer.get_matches("/model unknown ") == []
         assert completer.get_matches("/other") == []
+        assert completer.get_matches("/other ") == []
 
     def test_hints(self):
         completer = CommandCompleter({"googleai": MagicMock()})
@@ -207,6 +210,17 @@ class TestCommandCompleter:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(cli_module.asyncio, "run", MagicMock(side_effect=RuntimeError("loop")))
             completer.ensure_provider_models("googleai")
+
+    def test_ensure_provider_models_noop_when_already_fetched(self):
+        completer = CommandCompleter({"googleai": MagicMock()})
+        completer.fetch_attempted.add("googleai")
+
+        with pytest.MonkeyPatch.context() as mp:
+            run_mock = MagicMock()
+            mp.setattr(cli_module.asyncio, "run", run_mock)
+            completer.ensure_provider_models("googleai")
+
+        run_mock.assert_not_called()
 
     def test_configure_readline_with_module(self):
         fake_readline = MagicMock()
