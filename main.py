@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+from classes.cli import ConversationRenderer, CommandCompleter
 from classes.context import Context
 from model import openai as openai_provider
 from model import googleai as googleai_provider
@@ -19,13 +20,6 @@ PROVIDERS = {
     "googleai":  googleai_provider,
     "mistral": mistral_provider,
 }
-
-BLUE    = "\033[1;34m"
-GREEN   = "\033[1;32m"
-MAGENTA = "\033[1;35m"
-YELLOW  = "\033[1;33m"
-RED     = "\033[1;31m"
-RESET   = "\033[0m"
 
 def get_latest_conversation():
     """Find the most recently modified .jsonl file in the conversations dir."""
@@ -42,32 +36,22 @@ def save_conversation(context, conv_path, provider_name, model_name):
     context.serialize(str(conv_path), provider_name=provider_name, model_name=model_name)
 
 
-async def display_models(provider, client):
-    """Fetch and display available models from a provider."""
-    try:
-        models = await provider.get_models(client)
-        if not models:
-            print(f"{YELLOW}[No models found]{RESET}")
-            return
-        # Table header
-        print(f"\n{'ID':<45} {'Context Window':<15}")
-        print("-" * 62)
-        for m in models:
-            ctx_win = str(m["context_window"]) if m["context_window"] else "—"
-            print(f"{m['id']:<45} {ctx_win:<15}")
-        print()
-    except Exception as e:
-        print(f"{RED}[Error fetching models: {e}]{RESET}")
+async def display_models(renderer, models):
+    """Display provider models that have already been fetched."""
+    renderer.print_model_table(models)
 
 
-def resolve_system_prompt(prompt_file_arg=None):
+def resolve_system_prompt(prompt_file_arg=None, renderer=None):
     """Resolve the system prompt string following override rules."""
     if prompt_file_arg:
         path = Path(prompt_file_arg)
         if path.is_file():
             return path.read_text(encoding="utf-8")
         else:
-            print(f"{RED}[Warning: Prompt file '{prompt_file_arg}' not found. Falling back.]{RESET}")
+            if renderer is not None:
+                renderer.print_warning(
+                    f"[Warning: Prompt file '{prompt_file_arg}' not found. Falling back.]"
+                )
 
     local_prompt = Path("PROMPT.md")
     if local_prompt.is_file():
@@ -83,6 +67,9 @@ def resolve_system_prompt(prompt_file_arg=None):
 async def main():
     load_dotenv()
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    renderer = ConversationRenderer()
+    completer = CommandCompleter(PROVIDERS, renderer=renderer)
+    completer.configure_readline()
 
     parser = argparse.ArgumentParser(description="yacpt CLI")
     parser.add_argument("command", nargs="?", default="chat", choices=["chat", "resume"])
@@ -105,12 +92,12 @@ async def main():
             # Resume latest conversation
             conv_path = get_latest_conversation()
             if conv_path is None:
-                print(f"{RED}[No conversations found to resume]{RESET}")
+                renderer.print_error("[No conversations found to resume]")
                 sys.exit(1)
             resume_id = conv_path.stem
 
         if not conv_path.exists():
-            print(f"{RED}[Conversation {resume_id} not found]{RESET}")
+            renderer.print_error(f"[Conversation {resume_id} not found]")
             sys.exit(1)
 
         context, metadata = Context.deserialize(str(conv_path))
@@ -126,41 +113,43 @@ async def main():
 
         client = provider.create_client()
         msg_count = len(context.get_messages()) - 1  # exclude system
-        print(f"{BLUE}=== Resumed conversation {conversation_id} ({msg_count} messages) ==={RESET}")
+        renderer.print_banner(f"=== Resumed conversation {conversation_id} ({msg_count} messages) ===")
+        renderer.render_history(context)
     else:
         # New conversation
         provider = PROVIDERS[provider_name]
         client = provider.create_client()
         
         # Resolve custom prompt if present
-        actual_prompt = resolve_system_prompt(args.prompt_file)
+        actual_prompt = resolve_system_prompt(args.prompt_file, renderer=renderer)
         context = Context(actual_prompt)
         
         conversation_id = str(uuid.uuid4())
-        print(f"{BLUE}=== New conversation {conversation_id} ==={RESET}")
+        renderer.print_banner(f"=== New conversation {conversation_id} ===")
         conv_path = CONVERSATIONS_DIR / f"{conversation_id}.jsonl"
 
-    print(f"Active model: {provider.DISPLAY_NAME}")
-    print(f"Commands: /exit  /compact  /prune <n>  /model <provider> [model_name]\n")
+    renderer.print_plain(f"Active model: {provider.DISPLAY_NAME}")
+    renderer.print_plain("Commands: /exit  /compact  /prune <n>  /model <provider> [model_name]")
+    renderer.print_plain("Tab completes /commands and model IDs.")
+    renderer.print_plain()
 
     try:
         while True:
-            user_input = await asyncio.to_thread(input, f"{GREEN}You:{RESET} ")
+            user_input = await asyncio.to_thread(input, renderer.get_prompt("user"))
             cmd = user_input.strip().lower()
 
             # Handle commands
             if cmd in ("exit", "quit", "/exit"):
                 save_conversation(context, conv_path, provider_name, provider.MODEL)
-                print(f"\n{YELLOW}To resume this conversation use:{RESET}")
-                print(f"  python main.py resume {conversation_id}\n")
-                print("Goodbye!")
+                renderer.print_resume_hint(conversation_id)
+                renderer.print_plain("Goodbye!")
                 break
 
             if cmd == "/compact":
-                print(f"{YELLOW}[Compacting context...]{RESET}")
+                renderer.print_status("[Compacting context...]")
                 await context.compact(client)
                 save_conversation(context, conv_path, provider_name, provider.MODEL)
-                print(f"{GREEN}[Done]{RESET}")
+                renderer.print_success("[Done]")
                 continue
 
             if cmd.startswith("/prune"):
@@ -169,19 +158,19 @@ async def main():
                     n = int(parts[1])
                     context.prune(n)
                     save_conversation(context, conv_path, provider_name, provider.MODEL)
-                    print(f"{YELLOW}[Pruned context to last {n} messages.]{RESET}")
+                    renderer.print_status(f"[Pruned context to last {n} messages.]")
                 else:
-                    print(f"{RED}[Usage: /prune <number>]{RESET}")
+                    renderer.print_error("[Usage: /prune <number>]")
                 continue
 
             if cmd.startswith("/model"):
                 parts = cmd.split()
                 if len(parts) == 2 and parts[1] in PROVIDERS:
                     # Show available models for the provider
-                    target_provider = PROVIDERS[parts[1]]
-                    print(f"{YELLOW}[Fetching models for {parts[1]}...]{RESET}")
-                    await display_models(target_provider, target_provider.create_client())
-                    print(f"{YELLOW}[Use /model {parts[1]} <model_id> to switch]{RESET}")
+                    renderer.print_status(f"[Fetching models for {parts[1]}...]")
+                    await completer.fetch_provider_models(parts[1], force=True)
+                    await display_models(renderer, completer.get_cached_models(parts[1]))
+                    renderer.print_status(f"[Use /model {parts[1]} <model_id> to switch]")
                 elif len(parts) > 2 and parts[1] in PROVIDERS:
                     provider_name = parts[1]
                     provider = PROVIDERS[provider_name]
@@ -189,12 +178,12 @@ async def main():
                     provider.DISPLAY_NAME = f"{provider_name.capitalize()} ({provider.MODEL})"
                     try:
                         client = provider.create_client()
-                        print(f"{YELLOW}[Switched to {provider.DISPLAY_NAME}]{RESET}")
+                        renderer.print_status(f"[Switched to {provider.DISPLAY_NAME}]")
                     except ValueError as e:
-                        print(f"{RED}[{e}]{RESET}")
+                        renderer.print_error(f"[{e}]")
                 else:
                     names = ", ".join(PROVIDERS.keys())
-                    print(f"{RED}[Usage: /model <{names}> [model_name]]{RESET}")
+                    renderer.print_error(f"[Usage: /model <{names}> [model_name]]")
                 continue
 
             if not user_input.strip():
@@ -206,24 +195,22 @@ async def main():
 
             # Auto-compact if token limit is reached
             if context.count_tokens() >= AUTO_COMPACT_TOKENS:
-                print(f"{YELLOW}[Token limit reached. Auto-compacting...]{RESET}")
+                renderer.print_status("[Token limit reached. Auto-compacting...]")
                 await context.compact(client)
-                print(f"{GREEN}[Done]{RESET}")
-
-            print(f"{MAGENTA}AI:{RESET} ", end="", flush=True)
+                renderer.print_success("[Done]")
 
             # Stream response from the active provider
             try:
-                await provider.stream_response(client, context)
+                await provider.stream_response(client, context, renderer=renderer)
                 # Save after assistant response
                 save_conversation(context, conv_path, provider_name, provider.MODEL)
             except Exception as e:
-                print(f"\n{RED}Error: {e}{RESET}")
+                save_conversation(context, conv_path, provider_name, provider.MODEL)
+                renderer.print_error(f"Error: {e}")
 
     except (KeyboardInterrupt, EOFError):
         save_conversation(context, conv_path, provider_name, provider.MODEL)
-        print(f"\n\n{YELLOW}To resume this conversation use:{RESET}")
-        print(f"  python main.py resume {conversation_id}\n")
+        renderer.print_resume_hint(conversation_id)
 
 if __name__ == "__main__":  # pragma: no cover
     try:

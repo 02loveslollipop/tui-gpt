@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import asyncio
+import re
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -33,6 +34,14 @@ class TestResolveSystemPrompt:
             mock_is_file.return_value = False
             res = main.resolve_system_prompt("missing.md")
             assert res == main.SYSTEM_PROMPT
+
+    def test_prompt_file_arg_not_found_warns_via_renderer(self):
+        import main
+        renderer = MagicMock()
+        with patch("main.Path.is_file", return_value=False):
+            res = main.resolve_system_prompt("missing.md", renderer=renderer)
+        assert res == main.SYSTEM_PROMPT
+        renderer.print_warning.assert_called_once()
 
     def test_local_prompt_exists(self):
         import main
@@ -118,38 +127,24 @@ class TestSaveConversation:
 # ── display_models ────────────────────────────────────────────────────────
 
 class TestDisplayModels:
-    @pytest.mark.asyncio
-    async def test_with_models(self, capsys):
+    def test_with_models(self, capsys):
         import main
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(return_value=[
+        from classes.cli import ConversationRenderer
+        main.asyncio.run(main.display_models(ConversationRenderer(), [
             {"id": "model-1", "name": "Model 1", "description": "", "context_window": 128000},
             {"id": "model-2", "name": "Model 2", "description": "", "context_window": None},
-        ])
-        await main.display_models(mock_provider, MagicMock())
+        ]))
         captured = capsys.readouterr()
         assert "model-1" in captured.out
         assert "128000" in captured.out
         assert "model-2" in captured.out
 
-    @pytest.mark.asyncio
-    async def test_no_models(self, capsys):
+    def test_no_models(self, capsys):
         import main
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(return_value=[])
-        await main.display_models(mock_provider, MagicMock())
+        from classes.cli import ConversationRenderer
+        main.asyncio.run(main.display_models(ConversationRenderer(), []))
         captured = capsys.readouterr()
         assert "No models found" in captured.out
-
-    @pytest.mark.asyncio
-    async def test_exception(self, capsys):
-        import main
-        mock_provider = MagicMock()
-        mock_provider.get_models = AsyncMock(side_effect=Exception("API fail"))
-        await main.display_models(mock_provider, MagicMock())
-        captured = capsys.readouterr()
-        assert "Error fetching models" in captured.out
-
 
 # ── Helpers for main() tests ─────────────────────────────────────────────
 
@@ -161,9 +156,14 @@ def _make_mock_provider(stream_text="Response text"):
     provider.ENV_VAR = "TEST_API_KEY"
     provider.create_client = MagicMock(return_value=MagicMock())
 
-    async def mock_stream(client, context):
-        print(stream_text, end="", flush=True)
-        print()
+    async def mock_stream(client, context, renderer=None):
+        if renderer is not None:
+            renderer.start_stream("assistant")
+            renderer.write_stream(stream_text)
+            renderer.end_stream()
+        else:
+            print(stream_text, end="", flush=True)
+            print()
         context.append("assistant", stream_text)
 
     provider.stream_response = AsyncMock(side_effect=mock_stream)
@@ -195,6 +195,24 @@ def _patch_main_for_test(tmp_path, inputs, argv=None, provider=None):
 # ── main() — new session ─────────────────────────────────────────────────
 
 class TestMainNewSession:
+    @pytest.mark.asyncio
+    async def test_new_session_does_not_prefetch_models_on_startup(self, tmp_path):
+        import main
+        provider = _make_mock_provider()
+        patches, conv_dir, _ = _patch_main_for_test(tmp_path, [], provider=provider)
+
+        input_sequence = iter(["/exit"])
+        with patch.object(main, "CONVERSATIONS_DIR", conv_dir), \
+             patch.object(main, "PROVIDERS", patches["PROVIDERS"]), \
+             patch("main.load_dotenv"), \
+             patch.object(sys, "argv", ["main.py"]), \
+             patch("main.uuid") as mock_uuid, \
+             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_sequence)):
+            mock_uuid.uuid4.return_value = "test-uuid-1234"
+            await main.main()
+
+        provider.get_models.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_send_message_and_exit(self, tmp_path, capsys):
         import main
@@ -303,8 +321,11 @@ class TestMainResume:
             await main.main()
 
         captured = capsys.readouterr()
-        assert "Resumed conversation resume-uuid" in captured.out
-        assert "2 messages" in captured.out
+        plain_out = re.sub(r"\x1b\[[0-9;]*m", "", captured.out)
+        assert "Resumed conversation resume-uuid" in plain_out
+        assert "2 messages" in plain_out
+        assert "You: Previous message" in plain_out
+        assert "AI: Previous reply" in plain_out
 
     @pytest.mark.asyncio
     async def test_resume_latest(self, tmp_path, capsys):
@@ -483,6 +504,7 @@ class TestMainCommands:
         captured = capsys.readouterr()
         assert "Fetching models" in captured.out
         assert "test-model" in captured.out
+        provider.get_models.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_model_switch(self, tmp_path, capsys):

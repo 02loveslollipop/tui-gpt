@@ -37,19 +37,32 @@ async def get_models(client=None):
     return models
 
 
-async def stream_response(client, context):
+async def stream_response(client, context, renderer=None):
+    """Stream a response and persist any partial assistant text if the stream fails."""
     messages = context.get_messages()
 
     full_response = ""
+    completed = False
     stream = await client.chat.stream_async(
         model=MODEL,
         messages=messages,
     )
-    async for chunk in stream:
-        delta = chunk.data.choices[0].delta.content
-        if delta:
-            full_response += delta
-            print(delta, end="", flush=True)
-
-    print()
-    context.append("assistant", full_response)
+    if renderer is not None:
+        renderer.start_stream("assistant")
+    try:
+        async for chunk in stream:
+            delta = chunk.data.choices[0].delta.content
+            if delta:
+                full_response += delta
+                if renderer is not None:
+                    renderer.write_stream(delta)
+                else:
+                    print(delta, end="", flush=True)
+        completed = True
+    finally:
+        if renderer is not None:
+            renderer.end_stream()
+        else:
+            print()
+        if full_response or completed:
+            context.append("assistant", full_response)

@@ -41,7 +41,7 @@ A Terminal User Interface (TUI) / CLI for interacting with various Large Languag
     Create a `.env` file in the root directory and add your API keys for the providers you intend to use.
     ```env
     OPENAI_API_KEY=your_openai_api_key
-    GEMINI_API_KEY=your_google_api_key
+    GOOGLE_API_KEY=your_google_api_key
     MISTRAL_API_KEY=your_mistral_api_key
     ```
 

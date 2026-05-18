@@ -170,7 +170,7 @@ class TestCLIIntegrationE2E:
              patch("main.load_dotenv"), \
              patch.object(sys, "argv", ["main.py"]), \
              patch("main.uuid") as mock_uuid, \
-             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_seq)):
+             patch("builtins.input", side_effect=lambda prompt: next(input_seq)):
             mock_uuid.uuid4.return_value = test_uuid
             await main.main()
 
@@ -198,7 +198,7 @@ class TestCLIIntegrationE2E:
              patch.object(main, "SYSTEM_PROMPT", "You are a test bot. Follow instructions exactly."), \
              patch("main.load_dotenv"), \
              patch.object(sys, "argv", ["main.py", "resume", test_uuid]), \
-             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_seq2)):
+             patch("builtins.input", side_effect=lambda prompt: next(input_seq2)):
             await main.main()
 
         # Verify the resumed file has the full conversation
@@ -250,7 +250,7 @@ class TestCLIIntegrationE2E:
              patch("main.load_dotenv"), \
              patch.object(sys, "argv", ["main.py"]), \
              patch("main.uuid") as mock_uuid, \
-             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_seq)):
+             patch("builtins.input", side_effect=lambda prompt: next(input_seq)):
             mock_uuid.uuid4.return_value = test_uuid
             await main.main()
 
@@ -291,7 +291,7 @@ class TestCLIIntegrationE2E:
              patch("main.load_dotenv"), \
              patch.object(sys, "argv", ["main.py"]), \
              patch("main.uuid") as mock_uuid, \
-             patch("asyncio.to_thread", side_effect=lambda fn, *a: next(input_seq)):
+             patch("builtins.input", side_effect=lambda prompt: next(input_seq)):
             mock_uuid.uuid4.return_value = test_uuid
             await main.main()
 
@@ -303,4 +303,3 @@ class TestCLIIntegrationE2E:
         assert lines[0]["meta"]["model"] == "mistral-small-latest"
         # Should have: meta + system + user1 + assistant1 + user2 + assistant2
         assert len(lines) == 6
-
