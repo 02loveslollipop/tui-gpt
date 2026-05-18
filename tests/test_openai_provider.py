@@ -139,3 +139,24 @@ class TestStreamResponse:
 
         await provider.stream_response(mock_client, ctx)
         assert ctx.get_messages()[-1]["content"] == "content"
+
+    @pytest.mark.asyncio
+    async def test_streaming_uses_renderer_when_provided(self):
+        from model import openai as provider
+        ctx = Context("sys")
+        ctx.append("user", "Hello")
+
+        event1 = MagicMock()
+        event1.type = "response.output_text.delta"
+        event1.delta = "rendered"
+
+        mock_client = AsyncMock()
+        mock_client.responses.create = AsyncMock(
+            return_value=AsyncIterator([event1])
+        )
+        renderer = MagicMock()
+
+        await provider.stream_response(mock_client, ctx, renderer=renderer)
+
+        renderer.write_stream.assert_called_once_with("rendered")
+        assert ctx.get_messages()[-1]["content"] == "rendered"

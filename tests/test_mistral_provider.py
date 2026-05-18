@@ -150,3 +150,24 @@ class TestStreamResponse:
 
         await provider.stream_response(mock_client, ctx)
         assert ctx.get_messages()[-1]["content"] == "content"
+
+    @pytest.mark.asyncio
+    async def test_streaming_uses_renderer_when_provided(self):
+        from model import mistral as provider
+        ctx = Context("sys")
+        ctx.append("user", "Hello")
+
+        chunk1 = MagicMock()
+        chunk1.data.choices = [MagicMock()]
+        chunk1.data.choices[0].delta.content = "rendered"
+
+        mock_client = MagicMock()
+        mock_client.chat.stream_async = AsyncMock(
+            return_value=AsyncIterator([chunk1])
+        )
+        renderer = MagicMock()
+
+        await provider.stream_response(mock_client, ctx, renderer=renderer)
+
+        renderer.write_stream.assert_called_once_with("rendered")
+        assert ctx.get_messages()[-1]["content"] == "rendered"

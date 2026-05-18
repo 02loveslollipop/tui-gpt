@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import asyncio
+import re
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch, call
@@ -309,10 +310,11 @@ class TestMainResume:
             await main.main()
 
         captured = capsys.readouterr()
-        assert "Resumed conversation resume-uuid" in captured.out
-        assert "2 messages" in captured.out
-        assert "You: Previous message" in captured.out
-        assert "AI: Previous reply" in captured.out
+        plain_out = re.sub(r"\x1b\[[0-9;]*m", "", captured.out)
+        assert "Resumed conversation resume-uuid" in plain_out
+        assert "2 messages" in plain_out
+        assert "You: Previous message" in plain_out
+        assert "AI: Previous reply" in plain_out
 
     @pytest.mark.asyncio
     async def test_resume_latest(self, tmp_path, capsys):
